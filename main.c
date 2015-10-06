@@ -16,14 +16,17 @@
 #include <net/if.h>
 #include <string.h>
 #include <pthread.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
 #include "myprotocol.h"
+#include "checksum.h"
 
 #define MAXSIZE 8192
 
 char *NameDev1="wlan1";
 char *NameDev2="eth1";
 char *IpWirelessDev="192.168.30.1";
-int assignIP=11;
 
 typedef struct	{
   int	soc;
@@ -60,8 +63,20 @@ int DebugPerror(char *msg)
   return(0);
 }
 
-void MakeIPAddress () {
+void MakeIPAddress (char *ip)
+{
+  char first[] = "192";
+  char second[] = "168";
+  char third[] = "30";
+  char fourth[] = "11";
   
+  strncpy(ip, first, 3);
+  strcat(ip, ".");
+  strcat(ip, second);
+  strcat(ip, ".");
+  strcat(ip, third);
+  strcat(ip, ".");
+  strcat(ip, fourth);
 }
 
 void make_ethernet(struct ether_header *eth, unsigned char *ether_dhost,
@@ -72,8 +87,12 @@ void make_ethernet(struct ether_header *eth, unsigned char *ether_dhost,
 }
 
 void make_mydhcp(struct myprotocol *myproto) {
+  char ip[16];
+
+  MakeIPAddress(ip);
+ 
   myproto->ip_src = inet_addr(IpWirelessDev);
-  myproto->ip_dst = inet_addr("192.168.30.11");
+  myproto->ip_dst = inet_addr(ip);
   myproto->type = htons(OFFER);
 }
 
@@ -198,6 +217,78 @@ int myDHCP()
   return(0);
 }
 
+int RewritePacket (int deviceNo, u_char *data, int size) {
+  u_char *ptr;
+  struct ether_header *eh;
+  int lest;
+
+  ptr=data;
+  lest=size;
+  
+  if(lest<sizeof(struct ether_header)){
+    DebugPrintf("[%d]:lest(%d)<sizeof(struct ether_header)\n",deviceNo,lest);
+    return(-1);
+  }
+
+  eh=(struct ether_header *)ptr;
+  ptr+=sizeof(struct ether_header);
+  lest-=sizeof(struct ether_header);
+
+  // wirelessNIC -> physicalNIC
+  if(deviceNo==0){
+    char dMACaddr[18];
+    char wMACaddr[18];
+    char pMACaddr[18];
+    u_char tmpMACaddr[6];
+
+    my_ether_ntoa_r(eh->ether_dhost, dMACaddr, sizeof(dMACaddr));
+
+    int i;
+    for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device1.ifr_hwaddr.sa_data[i];
+    my_ether_ntoa_r(tmpMACaddr, wMACaddr, sizeof(wMACaddr));
+
+    for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device2.ifr_hwaddr.sa_data[i];
+    my_ether_ntoa_r(tmpMACaddr, pMACaddr, sizeof(pMACaddr));
+
+    if(strcmp(dMACaddr, wMACaddr)==0){
+      // Case: IP
+      if (ntohs(eh->ether_type)==ETHERTYPE_IP) {
+	struct iphdr *iphdr;
+	u_char option[1500];
+	int optLen;
+
+	iphdr=(struct iphdr *)ptr;
+	ptr+=sizeof(struct iphdr);
+	lest-=sizeof(struct iphdr);
+	
+	optLen=iphdr->ihl*4-sizeof(struct iphdr);
+	
+	if(optLen>0){
+	  memcpy(option, ptr, optLen);
+	  ptr+=optLen;
+	  lest-=optLen;
+	}
+	
+	/*
+	if(iphdr->saddr==inet_addr("192.168.30.11")){
+	  iphdr->saddr=inet_addr("192.168.20.51");
+	}
+	if(iphdr->daddr==inet_addr("192.168.30.1")){
+	  iphdr->daddr=inet_addr("192.168.20.19");
+	}
+	*/
+	//printf("test: %s\n", Device1.ifr_hwaddr);
+	//printf("test2\n");
+
+	iphdr->check=0;
+	iphdr->check=calcChecksum2((u_char *)iphdr, sizeof(struct iphdr), option, optLen);
+      }
+    }
+  }
+
+  return(0);
+}
+
 int Bridge()
 {
   struct pollfd	targets[2];
@@ -225,7 +316,7 @@ int Bridge()
 	    perror("read");
 	  }
 	  else{
-	    if(AnalyzePacket(i,buf,size)!=-1){
+	    if(AnalyzePacket(i,buf,size)!=-1 && RewritePacket(i,buf,size)!=-1){
 	      if((size=write(Device[(!i)].soc,buf,size))<=0){
 		perror("write");
 	      }
@@ -305,6 +396,8 @@ int changeIPAddr(u_int32_t ip)
   if (ioctl(fd, SIOCSIFADDR, &ifr) != 0) {
     perror("ioctl");
   }
+
+  printf("Change IP Address: %s\n", inet_ntoa(*(struct in_addr*)&ip));
 
   close(fd);
   return(0);
