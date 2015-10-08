@@ -13,7 +13,7 @@ extern int	DebugPrintf(char *fmt,...);
 extern int	DebugPerror(char *msg);
 
 
-int InitRawSocket(char *device,int promiscFlag,int ipOnly)
+int InitRawSocket(const char *device,int promiscFlag,int ipOnly)
 {
   struct ifreq	ifreq;
   struct sockaddr_ll	sa;

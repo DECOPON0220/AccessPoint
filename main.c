@@ -10,6 +10,7 @@
 #include	<netinet/if_ether.h>
 #include	"netutil.h"
 
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <netinet/in.h>
@@ -24,9 +25,11 @@
 
 #define MAXSIZE 8192
 
-char *NameDev1="wlan1";
-char *NameDev2="eth1";
-char *IpWirelessDev="192.168.30.1";
+const char *NameDev1="wlan1";
+const char *NameDev2="eth1";
+char *IpWirelessIf="192.168.30.1";
+char *nextRouter="192.168.20.1";
+
 
 typedef struct	{
   int	soc;
@@ -73,6 +76,7 @@ void MakeIPAddress (char *ip)
   strncpy(ip, first, 3);
   strcat(ip, ".");
   strcat(ip, second);
+
   strcat(ip, ".");
   strcat(ip, third);
   strcat(ip, ".");
@@ -237,11 +241,13 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
   // wirelessNIC -> physicalNIC
   if(deviceNo==0){
     char dMACaddr[18];
+    char sMACaddr[18];
     char wMACaddr[18];
     char pMACaddr[18];
     u_char tmpMACaddr[6];
 
     my_ether_ntoa_r(eh->ether_dhost, dMACaddr, sizeof(dMACaddr));
+    my_ether_ntoa_r(eh->ether_shost, sMACaddr, sizeof(sMACaddr));
 
     int i;
     for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device1.ifr_hwaddr.sa_data[i];
@@ -249,8 +255,14 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
 
     for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device2.ifr_hwaddr.sa_data[i];
     my_ether_ntoa_r(tmpMACaddr, pMACaddr, sizeof(pMACaddr));
+   
+    //if(strcmp(dMACaddr, wMACaddr)!=0){
+      int srcMAC[6];
 
-    if(strcmp(dMACaddr, wMACaddr)==0){
+      for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device2.ifr_hwaddr.sa_data[i];
+      my_ether_ntoa_r(tmpMACaddr, pMACaddr, sizeof(pMACaddr));
+      for(i=0;i<6;i++) eh->ether_shost[i]=srcMAC[i];
+
       // Case: IP
       if (ntohs(eh->ether_type)==ETHERTYPE_IP) {
 	struct iphdr *iphdr;
@@ -269,21 +281,18 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
 	  lest-=optLen;
 	}
 	
-	/*
-	if(iphdr->saddr==inet_addr("192.168.30.11")){
-	  iphdr->saddr=inet_addr("192.168.20.51");
+	// Rewrite MAC Address
+	for(i=0;i<6;i++) eh->ether_shost[i]=Device2.ifr_hwaddr.sa_data[i];
+	// Rewrite IP Address
+      	if(iphdr->saddr==inet_addr("192.168.30.11")){
+	  printf("saddr: %s\n", inet_ntoa(((struct sockaddr_in *)&Device2.ifr_addr)->sin_addr));
+	  iphdr->saddr=inet_addr(inet_ntoa(((struct sockaddr_in *)&Device2.ifr_addr)->sin_addr));
 	}
-	if(iphdr->daddr==inet_addr("192.168.30.1")){
-	  iphdr->daddr=inet_addr("192.168.20.19");
-	}
-	*/
-	//printf("test: %s\n", Device1.ifr_hwaddr);
-	//printf("test2\n");
 
 	iphdr->check=0;
 	iphdr->check=calcChecksum2((u_char *)iphdr, sizeof(struct iphdr), option, optLen);
       }
-    }
+      //}
   }
 
   return(0);
@@ -350,21 +359,34 @@ void EndSignal(int sig)
   EndFlag=1;
 }
 
-struct ifreq getIFInfo (char *device) {
+void getIfInfo (const char *device, struct ifreq *ifreq, int flavor)
+{
   int fd;
-  struct ifreq ifr;
 
   fd = socket(AF_INET, SOCK_DGRAM, 0);
-
-  ifr.ifr_addr.sa_family = AF_INET;
-  strncpy(ifr.ifr_name, device, IFNAMSIZ-1);
-
-  ioctl(fd, SIOCGIFHWADDR, &ifr);
-
+  memset(ifreq, '\0', sizeof(*ifreq));
+  strcpy(ifreq->ifr_name, device);
+  ioctl(fd, flavor, ifreq);
   close(fd);
+}
 
-  printf("Get \"%s\" Info\n", device);
-  return ifr;
+void printIfInfo (const char *device)
+{
+  struct ifreq ifreq;
+  struct sockaddr_in ipaddr;
+
+  printf("Get %s Information\n", device);
+  getIfInfo(device, &ifreq, SIOCGIFADDR);
+  memcpy(&ipaddr, &(ifreq.ifr_addr), sizeof(ipaddr));
+  getIfInfo(device, &ifreq, SIOCGIFHWADDR);
+  printf("IP: %s\n", inet_ntoa(ipaddr.sin_addr));
+  printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+	 (unsigned char)ifreq.ifr_hwaddr.sa_data[0],
+	 (unsigned char)ifreq.ifr_hwaddr.sa_data[1],
+	 (unsigned char)ifreq.ifr_hwaddr.sa_data[2],
+	 (unsigned char)ifreq.ifr_hwaddr.sa_data[3],
+	 (unsigned char)ifreq.ifr_hwaddr.sa_data[4],
+	 (unsigned char)ifreq.ifr_hwaddr.sa_data[5]);
 }
 
 void *thread1 (void *args) {
@@ -403,28 +425,30 @@ int changeIPAddr(u_int32_t ip)
   return(0);
 }
 
+
 int main(int argc,char *argv[],char *envp[])
 {
   pthread_t th1,th2;
-
-  // Get Interface Information
-  Device1 = getIFInfo(NameDev1);
-  Device2 = getIFInfo(NameDev2);
-
-  // Config Wireless Device IP Address
-  changeIPAddr(inet_addr(IpWirelessDev));
   
-  if((Device[0].soc=InitRawSocket(Device1.ifr_name,1,0))==-1){
-    DebugPrintf("InitRawSocket:error:%s\n",Device1);
-    return(-1);
-  }
-  DebugPrintf("%s OK\n",Device1);
+  // Config Wireless Device IP Address
+  changeIPAddr(inet_addr(IpWirelessIf));
 
-  if((Device[1].soc=InitRawSocket(Device2.ifr_name,1,0))==-1){
+  // Debug
+  printIfInfo(NameDev1);
+  printIfInfo(NameDev2);
+
+  // Init Soc
+  if((Device[0].soc=InitRawSocket(NameDev1,1,0))==-1){
     DebugPrintf("InitRawSocket:error:%s\n",Device1);
     return(-1);
   }
-  DebugPrintf("%s OK\n",Device2);
+  DebugPrintf("%s OK\n",NameDev1);
+
+  if((Device[1].soc=InitRawSocket(NameDev1,1,0))==-1){
+    DebugPrintf("InitRawSocket:error:%s\n",Device1);
+    return(-1);
+  }
+  DebugPrintf("%s OK\n",NameDev2);
 
   DisableIpForward();
 
@@ -437,7 +461,6 @@ int main(int argc,char *argv[],char *envp[])
   signal(SIGTTOU,SIG_IGN);
 
   DebugPrintf("bridge start\n");
-
   int status;
   if ((status = pthread_create(&th1, NULL, thread1, NULL)) != 0) {
     printf("pthread_create%s\n", strerror(status));
@@ -445,7 +468,6 @@ int main(int argc,char *argv[],char *envp[])
   if ((status = pthread_create(&th2, NULL, thread2, NULL)) != 0) {
     printf("pthread_create%s\n", strerror(status));
   }
-
   DebugPrintf("bridge end\n");
 
   pthread_join(th1, NULL);
