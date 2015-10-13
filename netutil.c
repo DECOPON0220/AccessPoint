@@ -78,6 +78,19 @@ char *my_ether_ntoa_r(u_char *hwaddr,char *buf,socklen_t size)
   return(buf);
 }
 
+u_char *my_ether_aton_r(char *hwaddr, u_char *buf, socklen_t size)
+{
+  int i;
+  for (i=0;i<6;i++) {
+    buf[i][0]=hwaddr[0];
+    buf[i][1]=hwaddr[1];
+    buf[i][2]='\0';
+    ptr+=3;
+  }
+
+  return(buf);
+}
+
 int PrintEtherHeader(struct ether_header *eh,FILE *fp)
 {
   char	buf[80];
