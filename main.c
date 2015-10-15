@@ -38,10 +38,11 @@ typedef struct	{
 }DEVICE;
 DEVICE	Device[2];
 
+int StatusFlag=1;
 int DebugFlag=0;
 int EndFlag=0;
 
-char cliMacAddr[18];
+char cliMacAddr[SIZE_MAC];
 char dev1MacAddr[SIZE_MAC];
 char dev2MacAddr[SIZE_MAC];
 char dev1IpAddr[SIZE_IP];
@@ -92,45 +93,47 @@ void make_ethernet(struct ether_header *eth, unsigned char *ether_dhost,
   eth->ether_type = htons(ether_type);
 }
 
-void make_mydhcp(struct myprotocol *myproto) {
-  char ip[16];
-
-  MakeIPAddress(ip);
- 
-  myproto->ip_src = inet_addr(IpWirelessIf);
-  myproto->ip_dst=inet_addr(ip);
-  myproto->type = htons(OFFER);
+void make_mydhcp(struct myprotocol *myproto, char *sip, char *dip, u_short type) {
+  myproto->ip_src = inet_addr(sip);
+  myproto->ip_dst = inet_addr(dip);
+  myproto->type = htons(type);
 }
 
-
-
-void create_myprotocol (int soc) {
+void create_myprotocol (int soc, char *smac, char *dmac, char *sip, char *dip, u_short type) {
   char *sp;
   char send_buff[MAXSIZE];
   u_char smac_addr[6];
   u_char dmac_addr[6];
 
-  int tmp_dmac[6];
-
   sp = send_buff + sizeof(struct ether_header);
+
+  my_ether_aton_r(smac, smac_addr);
+  my_ether_aton_r(dmac, dmac_addr);
   
-  if (sscanf(cliMacAddr, "%x:%x:%x:%x:%x:%x", &tmp_dmac[0], &tmp_dmac[1], &tmp_dmac[2], &tmp_dmac[3],
-	     &tmp_dmac[4], &tmp_dmac[5]) != 6) {
-    printf("MAC address error %s\n", cliMacAddr);
-  }
-
-  int i;
-  my_ether_aton_r(dev1MacAddr, smac_addr);
-  for (i = 0; i < 6; i++) dmac_addr[i] = (char) tmp_dmac[i];
-
-  make_mydhcp((struct myprotocol *) sp);
-  make_ethernet((struct ether_header *) send_buff, dmac_addr, smac_addr, OFFER);
+  make_mydhcp((struct myprotocol *) sp, sip, dip, type);
+  make_ethernet((struct ether_header *) send_buff, dmac_addr, smac_addr, type);
 
   int len;
   len = sizeof(struct ether_header) + sizeof(struct myprotocol);
   if (write(soc, send_buff, len) < 0) {
     perror("write");
   }
+}
+
+int sendMyProtocol(int deviceNo)
+{
+  while(EndFlag==0){
+    if(StatusFlag==2){
+      printf("Send Offer Packet\n");
+      
+      char *dip = "192.168.30.11";
+      create_myprotocol(Device[deviceNo].soc, dev1MacAddr, cliMacAddr, IpWirelessIf, dip, OFFER);
+      
+      usleep(10000 * 100);
+    }
+  }
+    
+  return(0);
 }
 
 int AnalyzePacket(int deviceNo,u_char *data,int size)
@@ -146,17 +149,48 @@ int AnalyzePacket(int deviceNo,u_char *data,int size)
     DebugPrintf("[%d]:lest(%d)<sizeof(struct ether_header)\n",deviceNo,lest);
     return(-1);
   }
+
   eh=(struct ether_header *)ptr;
   ptr+=sizeof(struct ether_header);
   lest-=sizeof(struct ether_header);
+
   DebugPrintf("[%d]",deviceNo);
   if(DebugFlag){
     PrintEtherHeader(eh,stderr);
+  }
+  
+  // Check My Protocol
+  if(StatusFlag==1) {
+    char sMACaddr[18];
+    char dMACaddr[18];
+
+    my_ether_ntoa_r(eh->ether_shost, sMACaddr, sizeof(sMACaddr));
+    my_ether_ntoa_r(eh->ether_dhost, dMACaddr, sizeof(dMACaddr));
+    memcpy(cliMacAddr, sMACaddr, sizeof(sMACaddr));
+    
+    if(strncmp(dMACaddr, "ff:ff:ff:ff:ff:ff", SIZE_MAC)==0 &&
+       ntohs(eh->ether_type)==DISCOVER){
+      struct myprotocol *myproto;
+      
+      printf("Recieve Discover Packet\n");
+      myproto=(struct myprotocol *) ptr;
+      ptr+=sizeof(struct myprotocol);
+      lest-=sizeof(struct myprotocol);
+
+      if((myproto->ip_src==inet_addr("00H.00H.00H.00H")) &&
+	 (myproto->ip_dst==inet_addr("FF.FF.FF.FFH")) &&
+	 (ntohs(myproto->type) == DISCOVER)){
+	StatusFlag=2;
+      }
+    } else if (StatusFlag==2) {
+
+    }
   }
 
   return(0);
 }
 
+/*
 int chkMyProtocol(u_char *data, int size) {
   u_char *ptr;
   int lest;
@@ -193,7 +227,9 @@ int chkMyProtocol(u_char *data, int size) {
 
   return(flg);
 }
+*/
 
+/*
 int myDHCP()
 {
   struct pollfd target[1];
@@ -224,12 +260,12 @@ int myDHCP()
 
   return(0);
 }
+*/
 
 int RewritePacket (int deviceNo, u_char *data, int size) {
   u_char *ptr;
   struct ether_header *eh;
   int lest;
-  //struct ifreq ifreq;
   
   ptr=data;
   lest=size;
@@ -247,29 +283,18 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
   if(deviceNo==0){
     char dMACaddr[18];
     char sMACaddr[18];
-    char wMACaddr[18];
-    char pMACaddr[18];
     u_char tmpMACaddr[6];
 
+    // Get dMAC, sMAC
     my_ether_ntoa_r(eh->ether_dhost, dMACaddr, sizeof(dMACaddr));
     my_ether_ntoa_r(eh->ether_shost, sMACaddr, sizeof(sMACaddr));
-
-    int i;
-    //for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device1.ifr_hwaddr.sa_data[i];
-    my_ether_aton_r(dev1MacAddr, tmpMACaddr);
-    my_ether_ntoa_r(tmpMACaddr, wMACaddr, sizeof(wMACaddr));
-
-    //for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device2.ifr_hwaddr.sa_data[i];
-    my_ether_aton_r(dev2MacAddr, tmpMACaddr);
-    my_ether_ntoa_r(tmpMACaddr, pMACaddr, sizeof(pMACaddr));
-   
-    int srcMAC[6];
     
-    //for (i=0;i<6;i++) tmpMACaddr[i]=(char)Device2.ifr_hwaddr.sa_data[i];
+    // shost = physicalNIC IP
+    int i;
     my_ether_aton_r(dev2MacAddr, tmpMACaddr);
-    my_ether_ntoa_r(tmpMACaddr, pMACaddr, sizeof(pMACaddr));
-    for(i=0;i<6;i++) eh->ether_shost[i]=srcMAC[i];
+    for(i=0;i<6;i++) eh->ether_shost[i]=tmpMACaddr[i];
 
+    /*
     // Case: IP
     if (ntohs(eh->ether_type)==ETHERTYPE_IP) {
       struct iphdr *iphdr;
@@ -289,18 +314,18 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
       }
       
       // Rewrite MAC Address
-      //for(i=0;i<6;i++) eh->ether_shost[i]=Device2.ifr_hwaddr.sa_data[i];
       my_ether_aton_r(dev2MacAddr, eh->ether_shost);
       // Rewrite IP Address
+      
       if(iphdr->saddr==inet_addr("192.168.30.11")){
-	//printf("saddr: %s\n", inet_ntoa(((struct sockaddr_in *)&Device2.ifr_addr)->sin_addr));
-	//iphdr->saddr=inet_addr(inet_ntoa(((struct sockaddr_in *)&Device2.ifr_addr)->sin_addr));
-	iphdr->saddr=inet_addr(dev2MacAddr);
+	printf("test");
+	iphdr->saddr=inet_addr(dev2IpAddr);
       }
       
       iphdr->check=0;
       iphdr->check=calcChecksum2((u_char *)iphdr, sizeof(struct iphdr), option, optLen);
     }
+    */
   }
 
   return(0);
@@ -333,7 +358,8 @@ int Bridge()
 	    perror("read");
 	  }
 	  else{
-	    if(AnalyzePacket(i,buf,size)!=-1 && RewritePacket(i,buf,size)!=-1){
+	    //if(AnalyzePacket(i,buf,size)!=-1 && RewritePacket(i,buf,size)!=-1){
+	    if(AnalyzePacket(i,buf,size)!=-1){
 	      if((size=write(Device[(!i)].soc,buf,size))<=0){
 		perror("write");
 	      }
@@ -351,7 +377,6 @@ int Bridge()
 int DisableIpForward()
 {
   FILE    *fp;
-
   if((fp=fopen("/proc/sys/net/ipv4/ip_forward","w"))==NULL){
     DebugPrintf("cannot write /proc/sys/net/ipv4/ip_forward\n");
     return(-1);
@@ -400,13 +425,13 @@ void getIfIp (const char *device, char *ipAddr)
 
 void *thread1 (void *args) {
   printf("Create Thread1\n");
-  //Bridge();
+  Bridge();
   return NULL;
 }
 
 void *thread2 (void *args) {
   printf("Create Thread2\n");
-  myDHCP();
+  sendMyProtocol(0);
   return NULL;
 }
 
@@ -455,7 +480,7 @@ int main(int argc,char *argv[],char *envp[])
   }
   DebugPrintf("%s OK\n",NameDev1);
 
-  if((Device[1].soc=InitRawSocket(NameDev1,1,0))==-1){
+  if((Device[1].soc=InitRawSocket(NameDev2,1,0))==-1){
     DebugPrintf("InitRawSocket:error:%s\n",NameDev2);
     return(-1);
   }
