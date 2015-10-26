@@ -1,4 +1,4 @@
-OBJS=main.o netutil.o
+OBJS=main.o myprotocol.o ifutil.o netutil.o checksum.o debug.o 
 SRCS=$(OBJS:%.o=%.c)
 CFLAGS=-g -Wall
 LDLIBS=-lpthread

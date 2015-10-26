@@ -1,56 +1,36 @@
-#include	<stdio.h>
-#include	<string.h>
-#include	<unistd.h>
-#include	<poll.h>
-#include	<errno.h>
-#include	<signal.h>
-#include	<stdarg.h>
-#include	<sys/socket.h>
-#include	<arpa/inet.h>
-#include	<netinet/if_ether.h>
-#include	"netutil.h"
-
-#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <poll.h>
+#include <errno.h>
+#include <signal.h>
+#include <arpa/inet.h>
+#include <netinet/if_ether.h>
+#include <netinet/ip.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <net/if.h>
-#include <string.h>
 #include <pthread.h>
-#include <netinet/ip.h>
+//----- RewritePacket()
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
+//-----
+#include "mydef.h"
+#include "mystruct.h"
 #include "myprotocol.h"
+#include "ifutil.h"
+#include "netutil.h"
 #include "checksum.h"
+#include "debug.h"
 
-#define MAXSIZE 8192
-#define SIZE_MAC 18
-#define SIZE_IP 15
 
+
+// --- Global Variable ---
 const char *NameDev1="wlan1";
 const char *NameDev2="eth1";
 
-
-// ARP CACHE
-#define xstr(s) str(s)
-#define str(s) #s
-#define ARP_CACHE       "/proc/net/arp"
-#define ARP_STRING_LEN  1023
-#define ARP_BUFFER_LEN  (ARP_STRING_LEN + 1)
-#define ARP_LINE_FORMAT "%" xstr(ARP_STRING_LEN) "s %*s %*s " \
-                        "%" xstr(ARP_STRING_LEN) "s %*s " \
-                        "%" xstr(ARP_STRING_LEN) "s"
-
-
-
-typedef struct	{
-  int	soc;
-}DEVICE;
-DEVICE	Device[2];
-
-int StatusFlag=1;
-int DebugFlag=0;
-int EndFlag=0;
+int DebugOut=OFF;
+int StatusFlag=STA_DISCOVER;
+int EndFlag=OFF;
 
 char hostMacAddr[SIZE_MAC];
 char hostIpAddr[SIZE_IP];
@@ -60,158 +40,38 @@ char dev1MacAddr[SIZE_MAC];
 char dev2MacAddr[SIZE_MAC];
 char *dev1IpAddr="192.168.30.1";    // 192.168.30.1
 char dev2IpAddr[SIZE_IP];    // 192.168.20.~
-
 char allocIpAddr[SIZE_IP];
 
-int DebugPrintf(char *fmt,...)
-{
-  if(DebugFlag){
-    va_list	args;
+DEVICE	Device[2];
 
-    va_start(args,fmt);
-    vfprintf(stderr,fmt,args);
-    va_end(args);
-  }
 
-  return(0);
-}
-
-int DebugPerror(char *msg)
-{
-  if(DebugFlag){
-    fprintf(stderr,"%s : %s\n",msg,strerror(errno));
-  }
-
-  return(0);
-}
-
-void make_ethernet(struct ether_header *eth, unsigned char *ether_dhost,
-		   unsigned char *ether_shost, u_int16_t ether_type) {
-  memcpy(eth->ether_dhost, ether_dhost, 6);
-  memcpy(eth->ether_shost, ether_shost, 6);
-  eth->ether_type = htons(ether_type);
-}
-
-void make_mydhcp(struct myprotocol *myproto, char *sip, char *dip, u_short type) {
-  myproto->ip_src = inet_addr(sip);
-  myproto->ip_dst = inet_addr(dip);
-  myproto->type = htons(type);
-}
-
-void create_myprotocol (int soc, char *smac, char *dmac, char *sip, char *dip, u_short type) {
-  char *sp;
-  char send_buff[MAXSIZE];
-  u_char smac_addr[6];
-  u_char dmac_addr[6];
-
-  sp = send_buff + sizeof(struct ether_header);
-
-  my_ether_aton_r(smac, smac_addr);
-  my_ether_aton_r(dmac, dmac_addr);
-  
-  make_mydhcp((struct myprotocol *) sp, sip, dip, type);
-  make_ethernet((struct ether_header *) send_buff, dmac_addr, smac_addr, type);
-
-  int len;
-  len = sizeof(struct ether_header) + sizeof(struct myprotocol);
-  if (write(soc, send_buff, len) < 0) {
-    perror("write");
-  }
-}
-
-int sendMyProtocol(int deviceNo)
-{
-  while(EndFlag==0){
-    if(StatusFlag==2){
-      printf("Send Offer Packet\n");
-      
-      strcpy(allocIpAddr, "192.168.30.11");
-      create_myprotocol(Device[deviceNo].soc, dev1MacAddr, raspMacAddr, dev1IpAddr, allocIpAddr, OFFER);
-      
-      usleep(10000 * 100);
-    }
-  }
-    
-  return(0);
-}
 
 int AnalyzePacket(int deviceNo,u_char *data,int size)
 {
-  u_char	*ptr;
-  int	lest;
-  struct ether_header	*eh;
+  struct ether_header *eh;
+  eh=(struct ether_header *)data;
 
-  ptr=data;
-  lest=size;
-
-  if(lest<sizeof(struct ether_header)){
-    DebugPrintf("[%d]:lest(%d)<sizeof(struct ether_header)\n",deviceNo,lest);
+  if(size<sizeof(struct ether_header)){
+    DebugPrintf("[%d]:lest(%d)<sizeof(struct ether_header)\n",deviceNo,size);
     return(-1);
   }
-
-  eh=(struct ether_header *)ptr;
-  ptr+=sizeof(struct ether_header);
-  lest-=sizeof(struct ether_header);
-
   DebugPrintf("[%d]",deviceNo);
-  if(DebugFlag){
+  if(DebugOut){
     PrintEtherHeader(eh,stderr);
   }
   
   // Check My Protocol
-  if(StatusFlag==1) {
-    char sMACaddr[18];
-    char dMACaddr[18];
-
-    my_ether_ntoa_r(eh->ether_shost, sMACaddr, sizeof(sMACaddr));
-    my_ether_ntoa_r(eh->ether_dhost, dMACaddr, sizeof(dMACaddr));
-    
-    if(strncmp(dMACaddr, "ff:ff:ff:ff:ff:ff", SIZE_MAC)==0 &&
-       ntohs(eh->ether_type)==DISCOVER){
-      struct myprotocol *myproto;
-      
-      printf("-----\nRecieve Discover Packet\n");
-      memcpy(raspMacAddr, sMACaddr, sizeof(sMACaddr));
-      //memcpy(tmpMacAddr, sMACaddr, sizeof(sMACaddr));
-      myproto=(struct myprotocol *) ptr;
-      ptr+=sizeof(struct myprotocol);
-      lest-=sizeof(struct myprotocol);
-
-      if((myproto->ip_src==inet_addr("00H.00H.00H.00H")) &&
-	 (myproto->ip_dst==inet_addr("FF.FF.FF.FFH")) &&
-	 (ntohs(myproto->type)==DISCOVER)){
-	StatusFlag=2;
-	return(-1);
-      }
+  if(StatusFlag==STA_DISCOVER) {
+    if(chkMyProtocol(data, raspMacAddr, dev1MacAddr, raspIpAddr, dev1IpAddr, DISCOVER, size)==-1){
+      StatusFlag=STA_APPROVAL;
+      return(-1);
     }
-  } else if (StatusFlag==2) {
-      char sMACaddr[18];
-      char dMACaddr[18];
-
-      my_ether_ntoa_r(eh->ether_shost, sMACaddr, sizeof(sMACaddr));
-      my_ether_ntoa_r(eh->ether_dhost, dMACaddr, sizeof(dMACaddr));
-      
-      if(strncmp(dMACaddr, dev1MacAddr, SIZE_MAC)==0 &&
-	 strncmp(sMACaddr, raspMacAddr, SIZE_MAC)==0 &&
-	 //strncmp(sMACaddr, tmpMacAddr, SIZE_MAC)==0 &&
-	 ntohs(eh->ether_type)==APPROVAL){
-	struct myprotocol *myproto;
-
-	myproto=(struct myprotocol *) ptr;
-	ptr+=sizeof(struct myprotocol);
-	lest-=sizeof(struct myprotocol);
-	
-	if((myproto->ip_src==inet_addr(allocIpAddr)) &&
-	   (myproto->ip_dst==inet_addr(dev1IpAddr)) &&
-	   (ntohs(myproto->type)==APPROVAL)){
-	  printf("Recieve Approval Packet\n");
-	  memcpy(raspMacAddr, sMACaddr, sizeof(sMACaddr));
-	  memcpy(raspIpAddr, inet_ntoa(*(struct in_addr *)&myproto->ip_src), SIZE_IP);
-	  printf("Finish Assign IP\n-----\n");
-	  StatusFlag=1;
-	  return(-1);
-	}
-      }
+  } else if (StatusFlag==STA_APPROVAL) {
+    if(chkMyProtocol(data, raspMacAddr, dev1MacAddr, allocIpAddr, dev1IpAddr, APPROVAL, size)==-1){
+      strcpy(raspIpAddr, allocIpAddr);
+      StatusFlag=STA_WAIT;
+      return(-1);
+    }
   }
 
   return(0);
@@ -233,7 +93,6 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
   eh=(struct ether_header *)ptr;
   ptr+=sizeof(struct ether_header);
   lest-=sizeof(struct ether_header);
-
 
   char dMACaddr[18];
   char sMACaddr[18];;
@@ -355,7 +214,21 @@ int RewritePacket (int deviceNo, u_char *data, int size) {
       }
     }
   }
+  return(0);
+}
 
+int sendMyProtocol()
+{
+  while(EndFlag==0){
+    if(StatusFlag==2){
+      printf("Send Offer Packet\n");
+      
+      strcpy(allocIpAddr, "192.168.30.11");
+      create_myprotocol(Device[0].soc, dev1MacAddr, raspMacAddr, dev1IpAddr, allocIpAddr, OFFER);
+      
+      usleep(10000 * 100);
+    }
+  }
   return(0);
 }
 
@@ -365,9 +238,10 @@ int Bridge()
   int	nready,i,size;
   u_char	buf[2048];
 
-
+  // WLAN1
   targets[0].fd=Device[0].soc;
   targets[0].events=POLLIN|POLLERR;
+  // ETH1
   targets[1].fd=Device[1].soc;
   targets[1].events=POLLIN|POLLERR;
 
@@ -417,100 +291,19 @@ int DisableIpForward()
 
 void EndSignal(int sig)
 {
-  EndFlag=1;
-}
-
-void getIfInfo (const char *device, struct ifreq *ifreq, int flavor)
-{
-  int fd;
-
-  fd = socket(AF_INET, SOCK_DGRAM, 0);
-  memset(ifreq, '\0', sizeof(*ifreq));
-  strcpy(ifreq->ifr_name, device);
-  ioctl(fd, flavor, ifreq);
-  close(fd);
-}
-
-void getIfMac (const char *device, char *macAddr)
-{
-  struct ifreq ifreq;
-  u_char tmpAddr[6];
-
-  getIfInfo(device, &ifreq, SIOCGIFHWADDR);
-  
-  int i;
-  for(i=0;i<6;i++) tmpAddr[i]=(char)ifreq.ifr_hwaddr.sa_data[i];
-  my_ether_ntoa_r(tmpAddr, macAddr, SIZE_MAC);
-}
-
-void getIfIp (const char *device, char *ipAddr)
-{
-  struct ifreq ifreq;
-  
-  getIfInfo(device, &ifreq, SIOCGIFADDR);
-  memcpy(ipAddr, inet_ntoa(((struct sockaddr_in *)&ifreq.ifr_addr)->sin_addr), SIZE_IP);
+  EndFlag=ON;
 }
 
 void *thread1 (void *args) {
-  printf("Create Thread1\n");
+  DebugPrintf("Create Thread1\n");
   Bridge();
   return NULL;
 }
 
 void *thread2 (void *args) {
-  printf("Create Thread2\n");
-  sendMyProtocol(0);
+  DebugPrintf("Create Thread2\n");
+  sendMyProtocol();
   return NULL;
-}
-
-int changeIPAddr(const char *device, u_int32_t ip)
-{
-  int fd;
-  struct ifreq ifr;
-  struct sockaddr_in *s_in;
-
-  fd=socket(AF_INET, SOCK_DGRAM, 0);
-  
-  s_in=(struct sockaddr_in *)&ifr.ifr_addr;
-  s_in->sin_family = AF_INET;
-  s_in->sin_addr.s_addr = ip;
-
-  strncpy(ifr.ifr_name, device, IFNAMSIZ-1);
-  
-  if (ioctl(fd, SIOCSIFADDR, &ifr) != 0) {
-    perror("ioctl");
-  }
-
-  close(fd);
-  return(0);
-}
-
-char *getArpCache(const char *name, char *mac, char *ip)
-{
-  FILE *arpCache = fopen(ARP_CACHE, "r");
-  if (!arpCache)
-    {
-      perror("Arp Cache: Failed to open file \"" ARP_CACHE "\"");
-      return("error");
-    }
-  
-  /* Ignore the first line, which contains the header */
-  char header[ARP_BUFFER_LEN];
-  if (!fgets(header, sizeof(header), arpCache))
-    {
-      return("error");
-    }
-  
-  char ipAddr[ARP_BUFFER_LEN], hwAddr[ARP_BUFFER_LEN], device[ARP_BUFFER_LEN];
-  while (3 == fscanf(arpCache, ARP_LINE_FORMAT, ipAddr, hwAddr, device))
-    {
-      if(strncmp(name, device, sizeof(device))==0){
-	strcpy(mac, hwAddr);
-	strcpy(ip, ipAddr);
-      }
-    }
-  fclose(arpCache);
-  return("finish");
 }
 
 int main(int argc,char *argv[],char *envp[])
@@ -520,13 +313,12 @@ int main(int argc,char *argv[],char *envp[])
   getArpCache(NameDev2, hostMacAddr, hostIpAddr);
   
   // Init Wireless Interface IP Address
-  if(changeIPAddr(NameDev1, inet_addr(dev1IpAddr))==0){
-    printf("Change IP Address\n%s IP: %s\n", NameDev1, dev1IpAddr);
+  if(chgIfIp(NameDev1, inet_addr(dev1IpAddr))==0){
+    DebugPrintf("Change IP Address\n%s IP: %s\n", NameDev1, dev1IpAddr);
   }
 
   // Get IP and Mac Address
   getIfMac(NameDev1, dev1MacAddr);
-  //getIfIp(NameDev1, dev1IpAddr);
   getIfMac(NameDev2, dev2MacAddr);
   getIfIp(NameDev2, dev2IpAddr);
 

@@ -1,16 +1,18 @@
-#include	<stdio.h>
-#include	<string.h>
-#include	<unistd.h>
-#include	<sys/ioctl.h>
-#include	<arpa/inet.h>
-#include	<sys/socket.h>
-#include	<linux/if.h>
-#include	<net/ethernet.h>
-#include	<netpacket/packet.h>
-#include	<netinet/if_ether.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <linux/if.h>
+#include <net/ethernet.h>
+#include <netpacket/packet.h>
+#include <netinet/if_ether.h>
+#include "mydef.h"
 
 extern int	DebugPrintf(char *fmt,...);
 extern int	DebugPerror(char *msg);
+
 
 
 int InitRawSocket(const char *device,int promiscFlag,int ipOnly)
@@ -84,6 +86,30 @@ u_char *my_ether_aton_r(char *hwaddr, u_char *buf)
 	 &buf[0], &buf[1], &buf[2], &buf[3], &buf[4], &buf[5]);
 
   return(buf);
+}
+
+int getArpCache()
+{
+  FILE *arpCache=fopen(ARP_CACHE,"r");
+  if(!arpCache){
+    perror("Arp Cache: Failed to open file \"" ARP_CACHE "\"");
+    return (0);
+  }
+  
+  // Ignore the first line, which contains the header
+  char header[ARP_BUFFER_LEN];
+  if(!fgets(header,sizeof(header),arpCache)){
+    return(0);
+  }
+
+  char ipAddr[ARP_BUFFER_LEN], hwAddr[ARP_BUFFER_LEN], device[ARP_BUFFER_LEN];
+  int count=0;
+  while(3==fscanf(arpCache,ARP_LINE_FORMAT,ipAddr,hwAddr,device)){
+    printf("%03d: Mac Address of [%s] on [%s] is \"%s\"\n",
+	   ++count,ipAddr,device,hwAddr);
+  }
+  fclose(arpCache);
+  return(0);
 }
 
 int PrintEtherHeader(struct ether_header *eh,FILE *fp)
