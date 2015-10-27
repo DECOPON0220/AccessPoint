@@ -82,7 +82,7 @@ int AnalyzePacket(int deviceNo,u_char *data,int size)
 	my_ether_ntoa_r(eh->ether_shost, serverMacAddr, sizeof(serverMacAddr));
 	memcpy(dev1IpAddr, inet_ntoa(*(struct in_addr *)&myproto->ip_dst), SIZE_IP);
 	//-----
-	memcpy(dev2IpAddr, "192.168.30.2", SIZE_IP);
+	//memcpy(dev2IpAddr, "192.168.30.2", SIZE_IP);
 	//-----
 	memcpy(serverIpAddr, inet_ntoa(*(struct in_addr *)&myproto->ip_src), SIZE_IP);
 
@@ -133,10 +133,6 @@ int AnalyzePacket(int deviceNo,u_char *data,int size)
       my_ether_ntoa_r(eh->ether_dhost, app_dMacAddr, sizeof(app_dMacAddr));
       my_ether_ntoa_r(eh->ether_shost, app_sMacAddr, sizeof(app_sMacAddr));
 
-      printf("app_sMacAddr: %s\n", app_sMacAddr);
-      printf("raspMacAddr: %s\n", raspMacAddr);
-      printf("app_dMacAddr: %s\n", app_dMacAddr);
-      printf("dev1MacAddr: %s\n", dev1MacAddr);
       if((strncmp(app_sMacAddr, raspMacAddr, SIZE_MAC)==0) &&
 	 (strncmp(app_dMacAddr, dev1MacAddr, SIZE_MAC)==0) &&
 	 (myproto->ip_dst==inet_addr(dev1IpAddr))){
