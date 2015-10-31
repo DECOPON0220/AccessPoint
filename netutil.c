@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -86,6 +87,20 @@ u_char *my_ether_aton_r(char *hwaddr, u_char *buf)
 	 &buf[0], &buf[1], &buf[2], &buf[3], &buf[4], &buf[5]);
 
   return(buf);
+}
+
+char *plusIpAddr(char *ip, int num)
+{
+  int lenIp, f_octet;
+
+  lenIp=strlen(ip);
+  ip+=lenIp-1;
+  f_octet=atoi(ip);
+  f_octet+=num;
+  sprintf(ip,"%d",f_octet);
+  ip-=lenIp-1;
+
+  return(ip);
 }
 
 int getArpCache()
